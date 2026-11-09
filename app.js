@@ -358,7 +358,7 @@ function renderTopicSettings(topicId) {
   const title = h("h1", { text: "Topic settings" });
 
   const modeInputs = {};
-  const modeRows = [["instant", "Instant (high relevance only, up to 8 a day)"], ["digest", "Daily digest"], ["off", "Off"]]
+  const modeRows = [["instant", "Instant (relevance 65 and above)"], ["digest", "Daily digest"], ["off", "Off"]]
     .map(([value, label]) => {
       const radio = h("input", { type: "radio", name: "mode", value });
       modeInputs[value] = radio;
