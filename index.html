@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="description" content="Topic Pulse: only the news that moves your topics.">
+  <title>Topic Pulse</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">
+      <svg viewBox="0 0 108 108" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" d="M22 58h11l7-18 11 34 9-24 6 8h20"/></svg>
+      <span>Topic Pulse</span>
+    </a>
+    <nav id="nav"></nav>
+  </header>
+  <div id="banner" class="banner" role="status" hidden></div>
+  <main id="main">
+    <p class="muted center">Loading…</p>
+  </main>
+  <dialog id="dialog"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <noscript><p class="center">Topic Pulse needs JavaScript.</p></noscript>
+</body>
+</html>
