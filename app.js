@@ -21,6 +21,7 @@ function clearView() {
   cleanups.forEach((fn) => { try { fn(); } catch { /* listener already gone */ } });
   cleanups = [];
   main.replaceChildren();
+  main.setAttribute("data-started", "1");
   document.title = "Topic Pulse";
 }
 

@@ -8,6 +8,25 @@
   <title>Topic Pulse</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <script>
+    // Show start-up failures instead of an endless "Loading…".
+    (function () {
+      function report(msg) {
+        var m = document.getElementById("main");
+        if (m && m.getAttribute("data-started") !== "1") {
+          m.textContent = "Topic Pulse could not start: " + msg + ". Reload the page; if it keeps happening, try another browser.";
+        }
+      }
+      window.addEventListener("error", function (e) {
+        var src = e.target && (e.target.src || e.target.href);
+        report(src ? "could not load " + src : (e.message || "script error"));
+      }, true);
+      window.addEventListener("unhandledrejection", function (e) {
+        report(String((e.reason && (e.reason.message || e.reason.code)) || e.reason));
+      });
+      setTimeout(function () { report("timed out while loading"); }, 20000);
+    })();
+  </script>
   <script type="module" src="app.js"></script>
 </head>
 <body>
