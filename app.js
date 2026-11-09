@@ -483,7 +483,7 @@ function renderSettings() {
 
   main.append(h("h1", { text: "Settings" }),
     h("section", { class: "panel" }, h("h2", { text: "Quiet hours" }),
-      h("p", { class: "small muted", text: "No instant notifications on Android during these hours. Items still appear in the feed." }),
+      h("p", { class: "small muted", text: "No Android notifications during these hours. Alerts found meanwhile are sent together when quiet hours end." }),
       h("label", { class: "option" }, quiet, h("span", { text: "Enable quiet hours" })),
       h("div", { class: "row" }, h("label", { class: "inline" }, "From ", start), h("label", { class: "inline" }, "To ", end))),
     h("section", { class: "panel" }, h("h2", { text: "Service" }), serviceText),
