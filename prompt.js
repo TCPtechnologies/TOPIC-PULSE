@@ -1,10 +1,12 @@
 // "Share prompt" on the website: article links collected from any topic, copied to the clipboard.
-// Stored in users/{uid}.prompt, the same place the Android app uses, so both stay in sync.
-import { auth, db, doc, onSnapshot, runTransaction, serverTimestamp } from "./firebase.js";
+// Kept only in this browser's localStorage (one entry per signed-in account). Nothing is sent to
+// the backend or Firestore, and it is not shared with the Android app.
 import { h, icon, toast } from "./dom.js";
 
 export const MAX_ITEMS = 50;
 export const DEFAULT_INTRO = "Hi, please go through the content in the following news articles and tell me the crux.";
+const KEY_PREFIX = "tp_prompt_";
+const GOOGLE_NEWS = /^https?:\/\/news\.google\.com\//i;
 
 const state = { intro: DEFAULT_INTRO, items: [], shown: null };
 const wrap = document.getElementById("prompt-fab");
@@ -13,7 +15,7 @@ const editBtn = document.getElementById("prompt-edit");
 const countEl = document.getElementById("prompt-count");
 const labelEl = document.getElementById("prompt-label");
 const dialog = document.getElementById("dialog");
-let unsub = null;
+let storageKey = null;
 let refreshDialog = null;
 
 export const articles = (n) => (n === 1 ? "1 article" : `${n} articles`);
@@ -22,9 +24,34 @@ function parse(raw) {
   const p = { intro: DEFAULT_INTRO, items: [] };
   if (raw && typeof raw === "object") {
     if (typeof raw.intro === "string") p.intro = raw.intro;
-    if (Array.isArray(raw.items)) p.items = raw.items.filter((e) => e && typeof e.url === "string" && e.url);
+    if (Array.isArray(raw.items)) p.items = raw.items.filter((e) => e && typeof e.url === "string" && e.url).slice(0, MAX_ITEMS);
   }
   return p;
+}
+
+function load() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(storageKey) || "null"); } catch { raw = null; }
+  const p = parse(raw);
+  state.intro = p.intro;
+  state.items = p.items;
+}
+
+function save() {
+  if (!storageKey) return;
+  const data = { intro: state.intro.slice(0, 1000), items: state.items };
+  try {
+    if (state.items.length || state.intro !== DEFAULT_INTRO) localStorage.setItem(storageKey, JSON.stringify(data));
+    else localStorage.removeItem(storageKey);
+  } catch {
+    toast("Could not save the prompt in this browser.");
+  }
+}
+
+function changed() {
+  save();
+  render();
+  if (refreshDialog) refreshDialog();
 }
 
 /** Intro, a blank line, then one link per line (the format the user pastes into a chat). */
@@ -34,40 +61,41 @@ export function promptText(p = state) {
 }
 
 export function watchPrompt(uid) {
-  stopPrompt();
-  unsub = onSnapshot(doc(db, "users", uid), (snap) => {
-    const p = parse(snap.exists() ? snap.data().prompt : null);
-    state.intro = p.intro;
-    state.items = p.items;
-    render();
-    if (refreshDialog) refreshDialog();
-  }, () => { /* signed out */ });
+  storageKey = KEY_PREFIX + uid;
+  state.shown = null;
+  load();
+  render();
 }
 
 export function stopPrompt() {
-  if (unsub) unsub();
-  unsub = null;
+  storageKey = null;
+  state.intro = DEFAULT_INTRO;
   state.items = [];
   state.shown = null;
   render();
 }
+
+/** Called on an explicit sign-out: the prompt does not outlive the session, as on Android. */
+export function forgetPrompt() {
+  if (storageKey) {
+    try { localStorage.removeItem(storageKey); } catch { /* ignore */ }
+  }
+  stopPrompt();
+}
+
+// Another tab of the site changed the prompt.
+window.addEventListener("storage", (e) => {
+  if (!storageKey || e.key !== storageKey) return;
+  load();
+  render();
+  if (refreshDialog) refreshDialog();
+});
 
 function render() {
   const n = state.shown ?? state.items.length;
   wrap.hidden = n === 0 && state.shown === null;
   countEl.textContent = String(n);
   copyBtn.setAttribute("aria-label", `Copy prompt with ${articles(n)}`);
-}
-
-function mutate(change) {
-  const ref = doc(db, "users", auth.currentUser.uid);
-  return runTransaction(db, async (tx) => {
-    const snap = await tx.get(ref);
-    const p = parse(snap.exists() ? snap.data().prompt : null);
-    const result = change(p);
-    tx.update(ref, { prompt: { intro: p.intro.slice(0, 1000), items: p.items }, updated_at: serverTimestamp() });
-    return result;
-  });
 }
 
 function addEntries(p, entries) {
@@ -83,9 +111,46 @@ function addEntries(p, entries) {
   return added;
 }
 
-export const clearPrompt = () => mutate((p) => { p.items = []; }).catch(() => toast("Could not clear the prompt."));
-const removeUrl = (url) => mutate((p) => { p.items = p.items.filter((e) => e.url !== url); });
-const setIntro = (text) => mutate((p) => { p.intro = text; });
+export function clearPrompt() {
+  state.items = [];
+  changed();
+}
+
+function removeUrl(url) {
+  state.items = state.items.filter((e) => e.url !== url);
+  changed();
+}
+
+function setIntro(text) {
+  state.intro = text;
+  changed();
+}
+
+/**
+ * Feed items whose Google News link the Android app has since resolved carry the old link in
+ * gn_url. Swap those links in the prompt for the publisher's link.
+ */
+export function updatePromptLinks(items) {
+  if (!storageKey || !state.items.length) return;
+  const map = new Map();
+  for (const it of items) {
+    if (it && typeof it.gn_url === "string" && typeof it.url === "string" && it.url !== it.gn_url && !GOOGLE_NEWS.test(it.url)) {
+      map.set(it.gn_url, it.url);
+    }
+  }
+  if (!map.size) return;
+  const have = new Set(state.items.map((e) => e.url));
+  let swapped = false;
+  state.items = state.items.flatMap((e) => {
+    const to = map.get(e.url);
+    if (!to) return [e];
+    swapped = true;
+    if (have.has(to)) return [];  // the original link is already in the prompt
+    have.add(to);
+    return [{ ...e, url: to }];
+  });
+  if (swapped) changed();
+}
 
 // ---- add, with the "collect" animation ---------------------------------------------------
 
@@ -107,17 +172,14 @@ export async function addToPrompt(entries, ghosts) {
   const flying = ghosts.filter((g) => keep.has(g.dataset.url));
   ghosts.filter((g) => !keep.has(g.dataset.url)).forEach((g) => g.remove());
 
-  state.shown = state.items.length;
+  // Saved straight away; the count climbs as each thumbnail lands.
+  const before = state.items.length;
+  const added = addEntries(state, adding);
+  save();
+  if (refreshDialog) refreshDialog();
+  state.shown = before;
   render();
-  const write = mutate((p) => addEntries(p, adding));
-  await fly(flying, () => { state.shown += 1; render(); });
-  let added = 0;
-  try {
-    added = await write;
-    addEntries(state, adding);  // the snapshot listener confirms shortly
-  } catch {
-    toast("Could not add to the prompt. Check your connection.");
-  }
+  await fly(flying, () => { state.shown = Math.min(state.shown + 1, state.items.length); render(); });
   state.shown = null;
   render();
   if (added) toast(`Added ${articles(added)}. Click Copy prompt when you're ready.`);
@@ -197,10 +259,10 @@ function openReview() {
   intro.value = state.intro;
   let introChanged = false;
   intro.addEventListener("input", () => { introChanged = true; });
-  const saveIntro = async () => {
+  const saveIntro = () => {
     if (!introChanged) return;
     introChanged = false;
-    try { await setIntro(intro.value); } catch { toast("Could not save your message."); }
+    setIntro(intro.value);
   };
   intro.addEventListener("change", saveIntro);
   const count = h("h3", { class: "review-count" });
@@ -209,7 +271,7 @@ function openReview() {
     count.textContent = articles(state.items.length);
     list.replaceChildren(...state.items.map((e) => {
       const remove = h("button", { class: "btn small", type: "button", title: "Remove from prompt", "aria-label": "Remove from prompt" }, icon("close"));
-      remove.addEventListener("click", () => removeUrl(e.url).catch(() => toast("Could not remove.")));
+      remove.addEventListener("click", () => removeUrl(e.url));
       return h("li", {},
         h("div", { class: "review-text" }, h("div", { text: e.title || e.url }), h("div", { class: "small muted", text: e.source || "" })),
         remove);
@@ -230,7 +292,7 @@ function openReview() {
   });
   dialog.replaceChildren(h("div", { class: "dialog-body" },
     h("h2", { text: "Prompt" }),
-    h("p", { class: "small muted", text: "Copied as your message followed by one link per line. Synced with the Android app." }),
+    h("p", { class: "small muted", text: "Copied as your message followed by one link per line. Saved only in this browser." }),
     intro, count, list,
     h("div", { class: "actions" }, clear, h("span", { class: "spacer" }), close, copy)));
   refreshDialog = fill;

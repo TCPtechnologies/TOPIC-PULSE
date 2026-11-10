@@ -6,7 +6,7 @@ import {
 } from "./firebase.js";
 import { Api, service } from "./api.js";
 import { h, safeUrl, relative, dateTime, toast, icon } from "./dom.js";
-import { addToPrompt, articles, makeGhost, stopPrompt, watchPrompt } from "./prompt.js";
+import { addToPrompt, articles, forgetPrompt, makeGhost, stopPrompt, updatePromptLinks, watchPrompt } from "./prompt.js";
 
 // Height of the sticky header, used to stick the selection bar right under it.
 const setTopHeight = () => document.documentElement.style.setProperty(
@@ -436,6 +436,7 @@ function renderFeed(topicId) {
     if (selecting && !selected.size) { selecting = false; }
     list.replaceChildren(...shown.map((d) => feedTile(d.id, d.data(), sel)));
     applySelection();
+    updatePromptLinks(shown.map((d) => d.data()));
     empty.hidden = !(shown.length === 0 && status === "ready");
     more.hidden = noMore || !lastDoc;
   };
@@ -626,7 +627,7 @@ function renderSettings() {
   const usageUpdated = h("p", { class: "small muted", text: "Usage by all users together. Each service stops being called before its free limit." });
   const usageTable = h("tbody");
   const out = h("button", { class: "btn", type: "button" }, "Sign out");
-  out.addEventListener("click", () => signOut(auth));
+  out.addEventListener("click", () => { forgetPrompt(); signOut(auth); });
 
   main.append(h("h1", { text: "Settings" }),
     h("section", { class: "panel" }, h("h2", { text: "Quiet hours" }),
