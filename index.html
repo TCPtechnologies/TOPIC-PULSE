@@ -42,6 +42,17 @@
     <p class="muted center">Loading…</p>
   </main>
   <dialog id="dialog"></dialog>
+  <!-- Prompt button: visible once the prompt holds at least one article. -->
+  <div id="prompt-fab" class="prompt-fab" hidden>
+    <button id="prompt-edit" class="fab-mini" type="button" title="Review prompt" aria-label="Review prompt">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.3V21h3.7L17.8 9.9l-3.7-3.7L3 17.3zM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0l-1.8 1.8 3.7 3.7L20.7 7z"/></svg>
+    </button>
+    <button id="prompt-copy" class="fab" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
+      <span id="prompt-label">Copy prompt</span>
+      <span id="prompt-count" class="fab-count">0</span>
+    </button>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <noscript><p class="center">Topic Pulse needs JavaScript.</p></noscript>
 </body>

@@ -2,10 +2,17 @@
 import {
   auth, db, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut,
   doc, collection, query, orderBy, limit, startAfter, onSnapshot, getDoc, getDocs,
-  setDoc, updateDoc, serverTimestamp,
+  setDoc, updateDoc, serverTimestamp, writeBatch,
 } from "./firebase.js";
 import { Api, service } from "./api.js";
 import { h, safeUrl, relative, dateTime, toast, icon } from "./dom.js";
+import { addToPrompt, articles, makeGhost, stopPrompt, watchPrompt } from "./prompt.js";
+
+// Height of the sticky header, used to stick the selection bar right under it.
+const setTopHeight = () => document.documentElement.style.setProperty(
+  "--top-h", `${document.querySelector(".top").offsetHeight}px`);
+window.addEventListener("resize", setTopHeight);
+setTopHeight();
 
 const PAGE = 30;
 const main = document.getElementById("main");
@@ -30,11 +37,13 @@ function clearView() {
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
     if (statusUnsub) { statusUnsub(); statusUnsub = null; }
+    stopPrompt();
     showLogin();
     return;
   }
   try { await ensureUserDoc(user); } catch (e) { console.warn("user doc", e); }
   watchStatus();
+  watchPrompt(user.uid);
   renderNav(user);
   route();
 });
@@ -233,7 +242,46 @@ const TYPE = { analysis: "Analysis", event: "Event", data_release: "Data release
 const HORIZON = { near: "Near term", mid: "Mid term", long: "Long term" };
 const DIRECTION = { bullish: "Bullish", bearish: "Bearish", neutral: "Neutral" };
 
-function feedTile(it) {
+const HOLD_MS = 450;
+const HINT_KEY = "tp_selection_hint_seen";
+
+/**
+ * Selection on the website: press and hold an article (mouse or touch), or hover and click the
+ * round tick at its top-left. While selecting, a click toggles an article instead of opening it.
+ */
+function attachSelection(tile, id, sel) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  let held = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  tile.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    held = false;
+    startX = e.clientX;
+    startY = e.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      held = true;
+      timer = null;
+      if (navigator.vibrate) navigator.vibrate(15);
+      if (sel.active()) sel.toggle(id); else sel.start(id);
+    }, HOLD_MS);
+  });
+  tile.addEventListener("pointermove", (e) => {
+    if (timer && Math.hypot(e.clientX - startX, e.clientY - startY) > 10) cancel();
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach((t) => tile.addEventListener(t, cancel));
+  tile.addEventListener("contextmenu", (e) => {
+    if (held || sel.active() || e.pointerType === "touch") e.preventDefault();
+  });
+  tile.addEventListener("click", (e) => {
+    if (held) { held = false; e.preventDefault(); e.stopPropagation(); return; }
+    if (sel.active()) { e.preventDefault(); e.stopPropagation(); sel.toggle(id); }
+  }, true);
+}
+
+function feedTile(id, it, sel) {
   const url = safeUrl(it.url);
   const thumb = safeUrl(it.thumbnail);
   const published = it.published_at && it.published_at.toDate ? it.published_at.toDate() : null;
@@ -250,8 +298,14 @@ function feedTile(it) {
     ? h("img", { class: "thumb", src: thumb, alt: "", loading: "lazy", referrerpolicy: "no-referrer" })
     : h("div", { class: "thumb placeholder" }, icon(kind));
   if (thumb) media.addEventListener("error", () => media.replaceWith(h("div", { class: "thumb placeholder" }, icon(kind))));
-  return h("article", { class: "card tile" },
-    h("a", { class: "tile-main", href: url || "#", target: url ? "_blank" : null, rel: "noopener noreferrer" },
+  media.setAttribute("draggable", "false");
+  const box = h("input", { type: "checkbox", tabindex: "-1", "aria-hidden": "true" });
+  const pickHover = h("button", { class: "pick-hover", type: "button", title: "Select", "aria-label": "Select article" }, icon("check"));
+  pickHover.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); sel.start(id); });
+  pickHover.addEventListener("pointerdown", (e) => e.stopPropagation());
+  const tile = h("article", { class: "card tile", "data-id": id, "data-kind": kind },
+    h("span", { class: "pick" }, box), pickHover,
+    h("a", { class: "tile-main", href: url || "#", target: url ? "_blank" : null, rel: "noopener noreferrer", draggable: "false" },
       media,
       h("div", { class: "tile-text" },
         h("h3", { text: it.title || "" }),
@@ -259,6 +313,13 @@ function feedTile(it) {
     chips.length ? h("div", { class: "chips" }, chips.map((c) => h("span", { class: c === "Update" ? "chip accent" : "chip", text: c }))) : null,
     it.why_it_matters ? h("p", { class: "why", text: it.why_it_matters }) : null,
     more);
+  attachSelection(tile, id, sel);
+  return tile;
+}
+
+function markTile(tile, selected) {
+  tile.classList.toggle("selected", selected);
+  tile.querySelector(".pick input").checked = selected;
 }
 
 function renderFeed(topicId) {
@@ -273,23 +334,109 @@ function renderFeed(topicId) {
   const empty = h("p", { class: "muted empty", hidden: true, text: "Nothing relevant in the last 24 hours yet. New items show up here, and as notifications on Android." });
   const list = h("div", { class: "feed" });
   const more = h("button", { class: "btn more", type: "button", hidden: true }, "Load more");
-  main.append(
-    h("div", { class: "feed-head" }, h("a", { href: "#/", class: "back", text: "← Topics" }), title,
-      h("div", { class: "head-actions" }, refresh, settings)),
-    loading, errorBox, empty, list, more);
+  const hint = h("p", { class: "small muted hint", hidden: localStorage.getItem(HINT_KEY) === "1",
+    text: "Tip: press and hold an article (or hover and click its tick) to select it, then add it to the prompt." });
+  const head = h("div", { class: "feed-head" }, h("a", { href: "#/", class: "back", text: "← Topics" }), title,
+    h("div", { class: "head-actions" }, refresh, settings));
+
+  // ---- selection bar ----
+  const selCount = h("strong", { class: "sel-count" });
+  const selClose = h("button", { class: "btn icon-btn", type: "button", title: "Cancel selection", "aria-label": "Cancel selection" }, icon("close"));
+  const selAll = h("button", { class: "btn", type: "button" }, "Select all");
+  const selAdd = h("button", { class: "btn primary", type: "button" }, icon("add"), "Add to prompt");
+  const selDel = h("button", { class: "btn danger", type: "button" }, icon("trash"), "Delete");
+  const selbar = h("div", { class: "selbar", hidden: true, role: "toolbar", "aria-label": "Selected articles" },
+    selClose, selCount, h("span", { class: "spacer" }), selAll, selAdd, selDel);
+  main.append(head, selbar, hint, loading, errorBox, empty, list, more);
 
   let status = "";
   let first = [];
   let older = [];
   let lastDoc = null;
   let noMore = false;
+  let shown = [];
+  const removed = new Set();  // deleted here; hidden at once, before the database confirms
+  const selected = new Set();
+  let selecting = false;
   const base = () => query(collection(db, "topics", topicId, "items"), orderBy("published_at", "desc"));
+  const tileOf = (id) => list.querySelector(`.tile[data-id="${CSS.escape(id)}"]`);
+
+  const sel = {
+    active: () => selecting,
+    start(id) {
+      selecting = true;
+      selected.clear();
+      selected.add(id);
+      localStorage.setItem(HINT_KEY, "1");
+      hint.hidden = true;
+      applySelection();
+    },
+    toggle(id) {
+      if (selected.has(id)) selected.delete(id); else selected.add(id);
+      if (!selected.size) { sel.stop(); return; }
+      const t = tileOf(id);
+      if (t) markTile(t, selected.has(id));
+      selCount.textContent = `${selected.size} selected`;
+    },
+    stop() {
+      selecting = false;
+      selected.clear();
+      applySelection();
+    },
+  };
+  function applySelection() {
+    list.classList.toggle("selecting", selecting);
+    selbar.hidden = !selecting;
+    head.hidden = selecting;
+    selCount.textContent = `${selected.size} selected`;
+    list.querySelectorAll(".tile").forEach((t) => markTile(t, selected.has(t.dataset.id)));
+  }
+  const onKey = (e) => { if (e.key === "Escape" && selecting && !dialog.open) sel.stop(); };
+  document.addEventListener("keydown", onKey);
+  cleanups.push(() => document.removeEventListener("keydown", onKey));
+
+  selClose.addEventListener("click", () => sel.stop());
+  selAll.addEventListener("click", () => {
+    shown.forEach((d) => selected.add(d.id));
+    applySelection();
+  });
+  selAdd.addEventListener("click", () => {
+    const docs = shown.filter((d) => selected.has(d.id));
+    const entries = docs.map((d) => {
+      const it = d.data();
+      return { url: it.url, title: it.title || "", source: it.source || "", topic_id: topicId, item_id: d.id, added_at: Date.now() };
+    }).filter((e) => safeUrl(e.url));
+    // Ghosts are placed before leaving selection mode, which shifts the tiles.
+    const ghosts = docs.map((d) => { const t = tileOf(d.id); return t ? makeGhost(t, d.data().url) : null; }).filter(Boolean);
+    sel.stop();
+    addToPrompt(entries, ghosts);
+  });
+  selDel.addEventListener("click", async () => {
+    const ids = [...selected];
+    if (!ids.length || !confirm(`Delete ${articles(ids.length)}? They are removed from this feed on every device and do not come back.`)) return;
+    const batch = writeBatch(db);
+    ids.forEach((id) => batch.delete(doc(db, "topics", topicId, "items", id)));
+    sel.stop();
+    ids.forEach((id) => removed.add(id));
+    older = older.filter((d) => !removed.has(d.id));
+    update();
+    try {
+      await batch.commit();
+      toast(`Deleted ${articles(ids.length)}.`);
+    } catch (e) {
+      toast(`Could not delete (${e.code || e.message}).`);
+    }
+  });
 
   const update = () => {
     const ids = new Set(first.map((d) => d.id));
-    const all = first.concat(older.filter((d) => !ids.has(d.id)));
-    list.replaceChildren(...all.map((d) => feedTile(d.data())));
-    empty.hidden = !(all.length === 0 && status === "ready");
+    shown = first.concat(older.filter((d) => !ids.has(d.id))).filter((d) => !removed.has(d.id));
+    const present = new Set(shown.map((d) => d.id));
+    [...selected].forEach((id) => { if (!present.has(id)) selected.delete(id); });
+    if (selecting && !selected.size) { selecting = false; }
+    list.replaceChildren(...shown.map((d) => feedTile(d.id, d.data(), sel)));
+    applySelection();
+    empty.hidden = !(shown.length === 0 && status === "ready");
     more.hidden = noMore || !lastDoc;
   };
 
