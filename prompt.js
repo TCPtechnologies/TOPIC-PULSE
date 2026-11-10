@@ -12,6 +12,7 @@ const state = { intro: DEFAULT_INTRO, items: [], shown: null };
 const wrap = document.getElementById("prompt-fab");
 const copyBtn = document.getElementById("prompt-copy");
 const editBtn = document.getElementById("prompt-edit");
+const clearBtn = document.getElementById("prompt-clear");
 const countEl = document.getElementById("prompt-count");
 const labelEl = document.getElementById("prompt-label");
 const dialog = document.getElementById("dialog");
@@ -114,6 +115,17 @@ function addEntries(p, entries) {
 export function clearPrompt() {
   state.items = [];
   changed();
+}
+
+/** The Clear button: empty the prompt, with Undo in the message. */
+function clearWithUndo() {
+  const before = state.items.slice();
+  if (!before.length) return;
+  clearPrompt();
+  toast(`Removed ${articles(before.length)} from the prompt.`, {
+    label: "Undo",
+    fn: () => { addEntries(state, before); changed(); },
+  });
 }
 
 function removeUrl(url) {
@@ -281,7 +293,7 @@ function openReview() {
   const clear = h("button", { class: "btn danger", type: "button" }, "Clear all");
   const close = h("button", { class: "btn", type: "button" }, "Close");
   const copy = h("button", { class: "btn primary", type: "button" }, "Copy prompt");
-  clear.addEventListener("click", () => { clearPrompt(); dialog.close(); });
+  clear.addEventListener("click", () => { dialog.close(); clearWithUndo(); });
   close.addEventListener("click", () => dialog.close());
   copy.addEventListener("click", () => {
     // Copy first: browsers only allow clipboard writes right after the click.
@@ -303,3 +315,4 @@ function openReview() {
 
 copyBtn.addEventListener("click", () => copyPrompt());
 editBtn.addEventListener("click", openReview);
+clearBtn.addEventListener("click", clearWithUndo);
